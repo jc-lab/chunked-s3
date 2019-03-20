@@ -8,12 +8,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import kr.jclab.cloud.chunkeds3.dto.ObjectMetadataDTO;
 import org.apache.http.HttpStatus;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
 public class ChunkedS3 {
+    private static final String S3MetadataKey = "kr.jclab.cloud.chunkeds3";
+
     private AmazonS3 s3client;
     private final String bucket;
 
@@ -57,6 +60,8 @@ public class ChunkedS3 {
         PutChunkContext putObjectResult = new PutChunkContext();
         MessageDigest mdFile = MessageDigest.getInstance(this.messageDigest.getAlgorithm(), this.messageDigest.getProvider());
         MessageDigest mdChunk = MessageDigest.getInstance(this.messageDigest.getAlgorithm(), this.messageDigest.getProvider());
+        ObjectMetadata masterObjectMetadata = new ObjectMetadata();
+        ByteArrayInputStream masterObjectInputStream;
 
         while (!putObjectResult.isCompleted()) {
             ObjectMetadata chunkObjectMetadata = new ObjectMetadata();
@@ -72,14 +77,24 @@ public class ChunkedS3 {
         objectMetadataDTO.setFileHashValue(bytes2hex(mdFile.digest()));
         objectMetadataDTO.setFileSize(putObjectResult.getCurrentPos());
 
-        s3client.putObject(bucket, name, objectMapper.writeValueAsString(objectMetadataDTO));
+        masterObjectMetadata.addUserMetadata(S3MetadataKey, "true");
+
+        masterObjectInputStream = new ByteArrayInputStream(objectMapper.writeValueAsString(objectMetadataDTO).getBytes("UTF-8"));
+        s3client.putObject(bucket, name, masterObjectInputStream, masterObjectMetadata);
     }
 
     public ObjectMetadataDTO getObjectMetadata(String name) throws IOException {
         try {
             S3Object s3Object = s3client.getObject(this.bucket, name);
             try {
-                return objectMapper.readValue(s3Object.getObjectContent(), ObjectMetadataDTO.class);
+                ObjectMetadata masterObjectMetadata = s3Object.getObjectMetadata();
+                if(masterObjectMetadata != null) {
+                    String metadataValue = masterObjectMetadata.getUserMetaDataOf(S3MetadataKey);
+                    if("true".equalsIgnoreCase(metadataValue) || "1".equalsIgnoreCase(metadataValue)) {
+                        return objectMapper.readValue(s3Object.getObjectContent(), ObjectMetadataDTO.class);
+                    }
+                }
+                return null;
             } catch (IOException e) {
                 try {
                     s3Object.close();
